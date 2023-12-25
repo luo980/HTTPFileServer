@@ -5,3 +5,7 @@ List of Supported Features:
 * getting a list of catalog files using the GET method (it is recommended to use JSON as the data format for the response);
 * getting information about a file in the form of HTTP headers without getting the contents of the file using the HEAD method;
 * deleting a file / directory from storage using the DELETE method
+
+# EDIT
+
+ADD SHA256SUM SUPPORT
