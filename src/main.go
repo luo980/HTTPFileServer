@@ -9,10 +9,14 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"fmt"
+	"crypto/sha256"
+	"encoding/hex"
+	"path/filepath"
 )
 
 const (
-	dir 			= 		"/Users/shine/Desktop"
+	dir 			= 		"/home/luo980/mygits/file-update-ota/serve_path"
 	FILE 			= 		"File"
 	FOLDER 			= 		"Folder"
 )
@@ -21,15 +25,34 @@ type File struct {
 	ID				int 	`json:"id"`
 	Title			string	`json:"title"`
 	Type			string	`json:"type"`
+	SHA256			string	`json:"sha256"`
 }
 
-func createFileJSON(id int, title string, fileType string) *File {
+func createFileJSON(id int, title string, fileType string, hash256 string) *File {
 	file := new(File)
 	file.ID = id
 	file.Title = title
 	file.Type = fileType
+	file.SHA256 = hash256
 	return file
 }
+
+func calculateFileSHA256(filePath string) (string, error) {
+    file, err := os.Open(filePath)
+    if err != nil {
+        return "", err
+    }
+    defer file.Close()
+
+    hash256 := sha256.New()
+    if _, err := io.Copy(hash256, file); err != nil {
+        return "", err
+    }
+
+    hash := hash256.Sum(nil)
+    return hex.EncodeToString(hash), nil
+}
+
 
 func (file File) addToJSON(files []File) []File {
 	files = append(files, file)
@@ -67,14 +90,27 @@ func getFiles(c echo.Context) {
 	}
 
 	var foldersFiles []File
-	var file File
+	// var file File
 
-	for index, f := range files {
-		file.ID = index
-		file.Title = f.Name()
-		file.Type = defineFileOrFolder(f)
-		foldersFiles = file.addToJSON(foldersFiles)
-	}
+    for index, f := range files {
+        file := File{
+            ID:    index,
+            Title: f.Name(),
+            Type:  defineFileOrFolder(f),
+        }
+
+        if !f.IsDir() { // 只计算文件的 SHA256，跳过文件夹
+            sha, err := calculateFileSHA256(filepath.Join(path, f.Name()))
+            if err == nil {
+                file.SHA256 = sha
+            } else {
+                log.Printf("Error calculating SHA256 for file %s: %v", f.Name(), err)
+                // 可以选择如何处理这个错误，比如跳过或返回错误信息
+            }
+        }
+
+        foldersFiles = append(foldersFiles, file)
+    }
 
 	c.JSON(http.StatusOK, foldersFiles)
 }
@@ -101,34 +137,55 @@ func handleGETMethod(c echo.Context) error {
 }
 
 func handlePUTMethod(c echo.Context) error {
+    fmt.Println("handlePUTMethod")
+    fmt.Println(dir + c.Request().RequestURI)
+    _, err := os.Stat(dir + c.Request().RequestURI)
+    if err != nil {
+        c.Response().WriteHeader(http.StatusNotFound)
+        fmt.Println(err)
+        return nil
+    }
 
-	_, err := os.Stat(dir + c.Request().RequestURI)
-	if err != nil {
-		c.Response().WriteHeader(http.StatusNotFound)
-		return nil
-	}
+    fmt.Println("handleFileForm")
 
-	file, err := c.FormFile(FILE)
-	if err != nil {
-		c.Response().WriteHeader(http.StatusNotFound)
-		return err
-	}
-	src, err := file.Open()
-	if err != nil {
-		return err
-	}
-	defer src.Close()
+    file, err := c.FormFile(FILE)
+    if err != nil {
+        fmt.Println(err)
+        c.Response().WriteHeader(http.StatusNotFound)
+        return err
+    }
+    src, err := file.Open()
+    if err != nil {
+        return err
+    }
+    defer src.Close()
 
-	path := dir + c.Request().RequestURI + file.Filename
+    // 计算 SHA256 哈希
+    hash256 := sha256.New()
+    if _, err := io.Copy(hash256, src); err != nil {
+        return err
+    }
 
-	err = copyFile(c, src, path)
-	if err != nil {
-		return nil
-	}
+    hash := hash256.Sum(nil)
+    sha256String := hex.EncodeToString(hash)
 
-	json := createFileJSON(0,  file.Filename, FILE)
-	return c.JSON(http.StatusOK, json)
+    // 重置 src 的读取指针到文件开头
+    if _, err := src.Seek(0, 0); err != nil {
+        return err
+    }
+
+    path := dir + c.Request().RequestURI + file.Filename
+
+    // 复制文件
+    err = copyFile(c, src, path)
+    if err != nil {
+        return err
+    }
+
+    json := createFileJSON(0, file.Filename, FILE, sha256String)
+    return c.JSON(http.StatusOK, json)
 }
+
 
 func handleDELETEMethod(c echo.Context) error {
 	path := dir + c.Request().RequestURI
